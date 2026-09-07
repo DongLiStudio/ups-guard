@@ -139,14 +139,26 @@
               <!-- 数据保留设置 -->
               <div class="form-group" style="margin-top: 0.75rem;">
                 <label class="form-label">历史数据保留天数</label>
-                <input
-                    v-model.number="config.history_retention_days"
-                    type="number"
-                    min="1"
-                    max="90"
-                    class="form-control"
-                    :class="{ 'error': errors.history_retention_days }"
-                />
+                <div class="retention-setting">
+                  <input
+                      v-model.number="config.history_retention_days"
+                      type="number"
+                      min="1"
+                      max="90"
+                      class="form-control"
+                      :class="{ 'error': errors.history_retention_days }"
+                      :disabled="config.history_retention_days === 0"
+                  />
+                  <label class="retention-unlimited">
+                    <input
+                        type="checkbox"
+                        :checked="config.history_retention_days === 0"
+                        @change="toggleUnlimitedRetention"
+                    />
+                    无限制（不自动清理）
+                  </label>
+                </div>
+                <small class="help-text">选择无限制后将保留全部历史数据，可使用“清空数据”手动清理。</small>
               </div>
 
               <!-- 手动清理 -->
@@ -1273,6 +1285,20 @@ const config = ref<Config>({
 })
 
 const errors = ref<Record<string, string>>({})
+let previousRetentionDays = 30
+
+const toggleUnlimitedRetention = (event: Event) => {
+  const enabled = (event.target as HTMLInputElement).checked
+  if (enabled) {
+    if (config.value.history_retention_days > 0) {
+      previousRetentionDays = config.value.history_retention_days
+    }
+    config.value.history_retention_days = 0
+  } else {
+    config.value.history_retention_days = previousRetentionDays || 30
+  }
+}
+
 const saving = ref(false) // 自动保存状态
 const notificationTestResult = ref<{ success: boolean; message: string } | null>(null)
 
@@ -1454,8 +1480,9 @@ const validateConfig = (): boolean => {
     isValid = false
   }
 
-  if (config.value.history_retention_days < 1 || config.value.history_retention_days > 90) {
-    errors.value.history_retention_days = '请输入 1-90 之间的值'
+  if (config.value.history_retention_days !== 0 &&
+      (config.value.history_retention_days < 1 || config.value.history_retention_days > 90)) {
+    errors.value.history_retention_days = '请输入 1-90 之间的值，或选择无限制'
     isValid = false
   }
 
@@ -4165,5 +4192,24 @@ watch(
 
 .warning-text {
   color: #f59e0b;
+}
+
+.retention-setting {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.retention-setting .form-control {
+  flex: 1 1 140px;
+}
+
+.retention-unlimited {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  cursor: pointer;
 }
 </style>

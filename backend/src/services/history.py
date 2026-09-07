@@ -277,6 +277,16 @@ class HistoryService:
         Returns:
             清理的记录数
         """
+        # 0 表示无限制保留，不执行自动清理
+        if retention_days == 0:
+            return {
+                "events_deleted": 0,
+                "metrics_deleted": 0,
+                "skipped": True
+            }
+        if retention_days < 0:
+            raise ValueError("retention_days must be 0 or a positive integer")
+
         cutoff = datetime.now() - timedelta(days=retention_days)
         
         # 清理事件

@@ -157,6 +157,33 @@ class TestHistoryService:
         assert result["metrics_deleted"] >= 1
     
     @pytest.mark.asyncio
+    async def test_cleanup_skipped_when_retention_is_unlimited(self, temp_db):
+        """保留天数为 0 时不自动删除任何历史数据"""
+        service = HistoryService(temp_db)
+        old_time = (datetime.now() - timedelta(days=365)).isoformat()
+        await temp_db.execute(
+            "INSERT INTO events (event_type, message, timestamp) VALUES (?, ?, ?)",
+            ("POWER_LOST", "应永久保留的事件", old_time)
+        )
+        await temp_db.execute(
+            "INSERT INTO metrics (timestamp, battery_charge) VALUES (?, ?)",
+            (old_time, 50.0)
+        )
+        await temp_db.commit()
+
+        result = await service.cleanup_old_data(retention_days=0)
+
+        assert result == {
+            "events_deleted": 0,
+            "metrics_deleted": 0,
+            "skipped": True
+        }
+        event_count = await temp_db.fetch_one("SELECT COUNT(*) AS count FROM events")
+        metric_count = await temp_db.fetch_one("SELECT COUNT(*) AS count FROM metrics")
+        assert event_count["count"] == 1
+        assert metric_count["count"] == 1
+
+    @pytest.mark.asyncio
     async def test_event_with_metadata(self, temp_db):
         """测试带元数据的事件"""
         service = HistoryService(temp_db)
