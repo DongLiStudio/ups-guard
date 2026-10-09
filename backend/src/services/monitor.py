@@ -1,5 +1,9 @@
 """UPS 状态监控引擎"""
 import asyncio
+import os
+import time
+from collections import deque
+from services.driver_event_source import read_driver_variables
 import logging
 from datetime import datetime
 from typing import Optional, Callable
@@ -57,6 +61,11 @@ class UpsMonitor:
         # 事件驱动相关
         self._event_driven_client = None
         self._event_mode_active = False
+        self._driver_bridge_data = {}
+        self._driver_bridge_seen = 0.0
+        self._driver_bridge_frames = 0
+        self._driver_bridge_statuses = deque(maxlen=512)
+        self._driver_bridge_wakeup = asyncio.Event()
         self._communication_count_today = 0
         self._last_update_time: Optional[datetime] = None
         self._start_time = datetime.now()
@@ -389,8 +398,19 @@ class UpsMonitor:
                             # 事件驱动模式下，使用较长的轮询间隔作为备份
                             poll_interval = self.config.poll_interval_fallback if self.config else 60
                         
-                        await asyncio.sleep(poll_interval)
+                        if os.environ.get('NUT_EVENT_BRIDGE') == 'true' and self.config and self.config.event_driven_enabled and self.config.monitoring_mode in ('event_driven', 'hybrid'):
+                            if self._driver_bridge_statuses:
+                                continue
+                            try:
+                                await asyncio.wait_for(self._driver_bridge_wakeup.wait(), timeout=min(poll_interval, 15))
+                            except asyncio.TimeoutError:
+                                pass
+                            self._driver_bridge_wakeup.clear()
+                        else:
+                            await asyncio.sleep(poll_interval)
                     else:
+                        if os.environ.get('NUT_EVENT_BRIDGE') == 'true':
+                            await asyncio.sleep(1)  # Let event ingress run while the stream is unavailable.
                         # 无法读取状态，标记为离线并主动重连
                         logger.warning(f"Lost connection to UPS, _connection_notified={self._connection_notified}, attempting reconnect...")
                         self._current_status = UpsStatus.OFFLINE
@@ -403,7 +423,7 @@ class UpsMonitor:
                             logger.info("NUT_DISCONNECTED notification sent")
 
                         # 主动触发重连（如果是 RealNutClient）- 使用递增延迟
-                        if hasattr(self.nut_client, '_reconnect'):
+                        if os.environ.get('NUT_EVENT_BRIDGE') != 'true' and hasattr(self.nut_client, '_reconnect'):
                             # 计算重连间隔：使用递增延迟避免频繁重连
                             # 前 5 次快速重试（5s, 10s, 15s, 20s, 25s）
                             # 之后使用固定间隔（60s）
@@ -468,7 +488,10 @@ class UpsMonitor:
         start_time = datetime.now()
         
         try:
-            vars_dict = await self.nut_client.list_vars()
+            if os.environ.get('NUT_EVENT_BRIDGE') == 'true' and self.config and self.config.event_driven_enabled and self.config.monitoring_mode in ('event_driven', 'hybrid'):
+                vars_dict = await read_driver_variables(self)
+            else:
+                vars_dict = await self.nut_client.list_vars()
             
             if not vars_dict:
                 logger.debug("_read_ups_data: vars_dict is empty, returning None")
@@ -1034,6 +1057,10 @@ class UpsMonitor:
         if self.config.monitoring_mode not in ("event_driven", "hybrid"):
             return
             
+        if os.environ.get('NUT_EVENT_BRIDGE') == 'true':
+            logger.info('Using native NUT driver event bridge; no LISTEN or network polling')
+            return
+
         try:
             # 动态导入避免循环依赖
             from services.nut_client import EventDrivenNutClient

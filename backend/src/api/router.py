@@ -23,3 +23,6 @@ router.include_router(agents.router, tags=["agents"])
 router.include_router(diagnostic.router, tags=["diagnostic"])
 router.include_router(quick_actions.router, tags=["quick-actions"])
 router.include_router(analytics.router, tags=["analytics"])
+
+from api import driver_events
+router.include_router(driver_events.router, tags=['driver-events'])

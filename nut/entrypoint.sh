@@ -553,6 +553,11 @@ echo "Port: $UPS_PORT"
 echo "upsd PID: $UPSD_PID"
 echo "upsmon PID: $UPSMON_PID"
 
+# Native NUT driver events: bridge restarts after an unexpected process exit.
+if [ "${NUT_EVENT_BRIDGE:-false}" = "true" ] && [ -n "${API_TOKEN:-}" ]; then
+    (while true; do python3 /driver_event_bridge.py; sleep 2; done) &
+fi
+
 # UPS 驱动监控和自动重连函数（增强版 v2）
 monitor_ups_driver() {
     local check_interval=${UPS_MONITOR_INTERVAL:-15}  # 默认每15秒检查一次
