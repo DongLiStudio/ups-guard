@@ -1,6 +1,5 @@
 """系统信息 API"""
 import os
-import time
 import sys
 import re
 import json
@@ -1415,7 +1414,8 @@ async def get_monitoring_stats():
 
     # 获取最后更新时间
     last_update_time = getattr(monitor, '_last_update_time', None)
-    last_update_iso = last_update_time.isoformat() + "Z" if last_update_time else None
+    # _last_update_time 是本地 naive 时间，转换为带时区偏移的 ISO 字符串
+    last_update_iso = last_update_time.astimezone().isoformat() if last_update_time else None
     
     # 获取响应时间统计
     response_times = getattr(monitor, '_response_times', [])
@@ -1431,8 +1431,8 @@ async def get_monitoring_stats():
         "config_mode": config_mode,  # 原始配置模式（polling/event_driven/hybrid），用于前端 CSS class
         "event_mode_active": event_mode_active,
         "event_source": "native-driver-socket" if os.environ.get('NUT_EVENT_BRIDGE') == 'true' else "LISTEN",
-        "driver_event_frames": monitor._driver_bridge_frames,
-        "driver_bridge_age_seconds": time.monotonic() - monitor._driver_bridge_seen,
+        "driver_event_frames": getattr(monitor, '_driver_bridge_frames', 0),
+        "driver_bridge_age_seconds": monitor.driver_bridge_age_seconds() if hasattr(monitor, 'driver_bridge_age_seconds') else None,
         "today_communications": getattr(monitor, '_communication_count_today', 0),
         "last_update": last_update_iso,
         "uptime_seconds": (datetime.now() - monitor._start_time).total_seconds() if hasattr(monitor, '_start_time') else 0,

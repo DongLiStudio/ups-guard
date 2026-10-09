@@ -31,6 +31,8 @@ class DriverSocketTests(unittest.TestCase):
                             b'SETINFO ups.status "OL"\n'
                             b'SETINFO ups.model "Fixture UPS"\n'
                             b'DATAOK\nDUMPDONE\n'
+                            b'SETINFO ups.broken "unterminated\n'
+                            b'SETINFO ups.bad "\xff\xfe"\n'
                             b'SETINFO ups.status "OB"\n'
                             b'SETINFO ups.status "OL"\nDATASTALE\n')
 
@@ -49,6 +51,17 @@ class DriverSocketTests(unittest.TestCase):
         self.assertTrue(frames[0][1])
         self.assertFalse(frames[-1][1])
         self.assertEqual(frames[-1][0]['ups.model'], 'Fixture UPS')
+        # Malformed lines are skipped without tearing down the stream.
+        self.assertNotIn('ups.broken', frames[-1][0])
+
+
+class PublishTests(unittest.TestCase):
+    def test_full_queue_drops_oldest_without_blocking(self):
+        with patch.object(bridge, 'OUT', bridge.queue.Queue(maxsize=2)):
+            for index in range(5):
+                bridge.publish({'n': str(index)}, True, 'UPDATE')
+            kept = [bridge.OUT.get_nowait()['variables']['n'] for _ in range(2)]
+        self.assertEqual(kept, ['3', '4'])
 
 
 if __name__ == '__main__':

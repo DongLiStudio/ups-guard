@@ -11,13 +11,26 @@ import time
 import urllib.request
 
 OUT = queue.Queue(maxsize=512)
-TOKEN = os.environ.get('API_TOKEN', '')
+SECRET = os.environ.get('NUT_EVENT_SECRET', '')
+MIN_SECRET_LENGTH = 16
 URL = os.environ.get('NUT_EVENT_URL', 'http://backend:8000/api/system/driver-event')
 
 
 def publish(values, healthy, reason):
-    OUT.put({'variables': dict(values), 'healthy': healthy, 'reason': reason,
-             'created_at': time.time()})
+    frame = {'variables': dict(values), 'healthy': healthy, 'reason': reason,
+             'created_at': time.time()}
+    # Never block the driver socket reader on a slow/unavailable backend:
+    # when the queue is full, drop the oldest frame (it would expire anyway).
+    while True:
+        try:
+            OUT.put_nowait(frame)
+            return
+        except queue.Full:
+            try:
+                OUT.get_nowait()
+                OUT.task_done()
+            except queue.Empty:
+                pass
 
 
 def deliver():
@@ -29,7 +42,7 @@ def deliver():
                 break
             try:
                 req = urllib.request.Request(URL, data=json.dumps(frame).encode(),
-                    headers={'Authorization': 'Bearer ' + TOKEN,
+                    headers={'X-NUT-Event-Secret': SECRET,
                              'Content-Type': 'application/json'}, method='POST')
                 with urllib.request.urlopen(req, timeout=3) as response:
                     assert response.status == 200
@@ -75,7 +88,12 @@ def watch(path):
                 last_rx = time.monotonic()
                 while b'\n' in buffer:
                     raw, buffer = buffer.split(b'\n', 1)
-                    parts = shlex.split(raw.decode(), comments=False)
+                    try:
+                        parts = shlex.split(raw.decode('utf-8'), comments=False)
+                    except (UnicodeDecodeError, ValueError):
+                        # One malformed line must not tear down the stream.
+                        print('Skipping malformed driver line', flush=True)
+                        continue
                     if not parts:
                         continue
                     command = parts[0]
@@ -113,15 +131,29 @@ def watch(path):
 
 
 def main():
-    if not TOKEN:
-        raise RuntimeError('API_TOKEN is required for the driver event bridge')
+    if len(SECRET) < MIN_SECRET_LENGTH:
+        raise RuntimeError('NUT_EVENT_SECRET (>= 16 chars) is required for the driver event bridge')
     threading.Thread(target=deliver, daemon=True).start()
+    announced_down = False
     while True:
         try:
-            watch(find_socket())
+            path = find_socket()
+        except Exception as exc:
+            # Driver socket not created yet (startup) or ambiguous: report the
+            # outage once instead of posting DISCONNECTED every retry.
+            if not announced_down:
+                print('Waiting for driver socket: ' + str(exc), flush=True)
+                publish({}, False, 'DISCONNECTED')
+                announced_down = True
+            time.sleep(2)
+            continue
+        try:
+            announced_down = False
+            watch(path)
         except Exception as exc:
             print('Native driver event stream reconnect: ' + type(exc).__name__, flush=True)
             publish({}, False, 'DISCONNECTED')
+            announced_down = True
             time.sleep(2)
 
 

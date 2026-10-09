@@ -1,13 +1,22 @@
-"""Authenticated ingress from the NUT container's driver event bridge."""
+"""Ingress from the NUT container's native driver event bridge.
+
+This route is excluded from the global API-token middleware and authenticated
+with a dedicated shared secret (``NUT_EVENT_SECRET``) so that the NUT container
+never needs the full-privilege API token, and the browser-visible API token
+cannot be used to inject UPS power states.
+"""
+import hmac
 import os
 import time
-from datetime import datetime
-from typing import Dict, Literal
-from fastapi import APIRouter, HTTPException
+from typing import Dict, Literal, Optional
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 from services.monitor import get_monitor
 
 router = APIRouter()
+
+DRIVER_EVENT_PATH = '/api/system/driver-event'
+MIN_SECRET_LENGTH = 16
 
 
 class DriverFrame(BaseModel):
@@ -17,10 +26,22 @@ class DriverFrame(BaseModel):
     created_at: float
 
 
+def bridge_secret() -> str:
+    return os.environ.get('NUT_EVENT_SECRET', '')
+
+
 @router.post('/system/driver-event')
-async def receive_driver_event(frame: DriverFrame):
+async def receive_driver_event(
+        frame: DriverFrame,
+        x_nut_event_secret: Optional[str] = Header(default=None)):
     if os.environ.get('NUT_EVENT_BRIDGE') != 'true':
-        raise HTTPException(503, 'Driver event bridge disabled')
+        raise HTTPException(404, 'Not found')
+    secret = bridge_secret()
+    if len(secret) < MIN_SECRET_LENGTH:
+        raise HTTPException(503, 'NUT_EVENT_SECRET is not configured')
+    if not x_nut_event_secret or not hmac.compare_digest(
+            x_nut_event_secret.encode(), secret.encode()):
+        raise HTTPException(401, 'Invalid driver event secret')
     monitor = get_monitor()
     if not monitor:
         raise HTTPException(503, 'Monitor not ready')
@@ -28,16 +49,5 @@ async def receive_driver_event(frame: DriverFrame):
         raise HTTPException(422, 'Expired driver frame')
     if len(frame.variables) > 512 or any(len(k) > 256 or len(v) > 8192 for k, v in frame.variables.items()):
         raise HTTPException(422, 'Invalid driver frame size')
-    monitor._driver_bridge_data = dict(frame.variables) if frame.healthy else {}
-    if frame.reason == 'STATUS' and frame.healthy:
-        monitor._driver_bridge_statuses.append((time.monotonic(), dict(frame.variables)))
-    elif not frame.healthy:
-        monitor._driver_bridge_statuses.clear()
-    monitor._driver_bridge_seen = time.monotonic()
-    monitor._driver_bridge_frames += 1
-    enabled = monitor.config and monitor.config.event_driven_enabled and monitor.config.monitoring_mode in ('event_driven', 'hybrid')
-    monitor._event_mode_active = bool(enabled and frame.healthy and frame.variables.get('ups.status'))
-    monitor._last_update_time = datetime.now()
-    if frame.reason != 'HEARTBEAT' or not frame.healthy:
-        monitor._driver_bridge_wakeup.set()
-    return {'accepted': True, 'event_mode_active': monitor._event_mode_active}
+    active = monitor.ingest_driver_frame(frame.variables, frame.healthy, frame.reason)
+    return {'accepted': True, 'event_mode_active': active}

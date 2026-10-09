@@ -554,8 +554,12 @@ echo "upsd PID: $UPSD_PID"
 echo "upsmon PID: $UPSMON_PID"
 
 # Native NUT driver events: bridge restarts after an unexpected process exit.
-if [ "${NUT_EVENT_BRIDGE:-false}" = "true" ] && [ -n "${API_TOKEN:-}" ]; then
-    (while true; do python3 /driver_event_bridge.py; sleep 2; done) &
+if [ "${NUT_EVENT_BRIDGE:-false}" = "true" ]; then
+    if [ "${#NUT_EVENT_SECRET}" -ge 16 ]; then
+        (while true; do python3 /driver_event_bridge.py; sleep 2; done) &
+    else
+        echo "WARNING: NUT_EVENT_BRIDGE=true but NUT_EVENT_SECRET is missing or shorter than 16 chars; driver event bridge NOT started"
+    fi
 fi
 
 # UPS 驱动监控和自动重连函数（增强版 v2）
