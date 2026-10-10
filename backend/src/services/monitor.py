@@ -44,6 +44,7 @@ class UpsMonitor:
         self.config = config
         
         self._current_status = UpsStatus.OFFLINE
+        self._last_power_status = None  # Connectivity loss is not a power transition.
         self._current_data: Optional[UpsData] = None
         self._monitor_task: Optional[asyncio.Task] = None
         self._sample_task: Optional[asyncio.Task] = None
@@ -146,6 +147,8 @@ class UpsMonitor:
 
             self._current_data = data
             self._current_status = data.status
+            if data.status in (UpsStatus.ONLINE, UpsStatus.ON_BATTERY, UpsStatus.LOW_BATTERY):
+                self._last_power_status = data.status
 
             history_service = await get_history_service()
             notifier_service = get_notifier_service()
@@ -901,6 +904,11 @@ class UpsMonitor:
     
     async def _on_status_changed(self, old_status: UpsStatus, new_status: UpsStatus, data: UpsData):
         """处理状态变化"""
+
+        # Compare confirmed power states, preserving the last state across OFFLINE.
+        if new_status in (UpsStatus.ONLINE, UpsStatus.ON_BATTERY, UpsStatus.LOW_BATTERY):
+            old_status = self._last_power_status or old_status
+            self._last_power_status = new_status
 
         # 跟踪电池供电状态（用于电量平滑）
         if new_status in (UpsStatus.ON_BATTERY, UpsStatus.LOW_BATTERY) and old_status == UpsStatus.ONLINE:
